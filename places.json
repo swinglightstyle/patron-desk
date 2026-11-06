@@ -1,0 +1,7 @@
+{
+  "_about": "This machine's folders and programs for the patron desk. On another machine, change this file only. Relative paths are from this folder. browser: the browser's program file (empty: found in the usual places). browser_profile: the browser profile signed in to the post site, such as Default (empty: the browser's own choice).",
+  "packages": "packages",
+  "scratch": "../patron-desk-scratch",
+  "browser": "",
+  "browser_profile": ""
+}

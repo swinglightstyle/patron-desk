@@ -1,0 +1,417 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Mock post editor</title>
+<style>
+  body { font: 15px/1.4 system-ui, sans-serif; margin: 20px; max-width: 900px; }
+  textarea, [contenteditable] { display: block; width: 100%; box-sizing: border-box; margin: 6px 0; }
+  [contenteditable] { min-height: 120px; border: 1px solid #999; padding: 6px; }
+  .tile { display: inline-block; margin: 4px; border: 1px solid #ccc; padding: 4px; }
+  .tile img { width: 24px; height: 24px; }
+  [contenteditable] img { width: 120px; height: 80px; display: block; }
+  [aria-selected="true"], [aria-checked="true"] { outline: 3px solid green; }
+  .hide { display: none; }
+</style>
+</head>
+<body>
+<!--
+  A stand-in for Patreon's post editor, written for the tests. It uses the
+  page's hooks as they are on Beth's saved copies of 6 November 2026 (see
+  extension/selectors.js: the CONFIRMED entries, with the alt text box as
+  Beth copied it from the page), and guesses where those copies are silent
+  (the GUESS entries: the lists' choices, the collection list). It is not a copy of Patreon's page.
+  ?mode=editor     an editor that takes paste; every setting reachable; alt text
+  ?mode=plain      a bare text box that takes no paste; captions, one too long
+  ?mode=full       words already in the title and text
+  ?mode=batch      batch mode, every check passes
+  ?mode=batchsoft  batch mode, pictures have no "..." menu (must still pass)
+  ?mode=batchmiss  batch mode, the page's time zone differs from this computer's
+  ?mode=package    a real package, as the desk sends it
+  ?mode=paidfirst  Paid access already chosen, so the paywall line is in the text box
+  ?mode=stuck      batch mode, a gallery picture never finishes uploading
+  ?mode=unmarked   like the live page: pictures show at once with no loading
+                   mark, but take 6 seconds to upload, and their panel and
+                   caption box will not open until they have
+
+  Pictures upload slowly, as on the live page: a few seconds each, shown
+  meanwhile as a browser preview inside a box marked as loading.
+-->
+<div id="topbar">
+  <button type="button" aria-label="More actions" aria-haspopup="menu" id="topmenu">...</button>
+  <div id="topmenu-list" class="hide" role="menu">
+    <button type="button" role="menuitem">Latest features</button>
+    <button type="button" role="menuitem" id="delete-draft">Delete draft</button>
+  </div>
+  <button type="button" aria-label="Preview" id="preview">Preview post</button>
+  <button type="button" data-tag="make-a-post-action-publish" id="publish">Publish</button>
+  <button type="button" data-tag="make-a-post-action-schedule_post" id="schedule" aria-disabled="false">Schedule</button>
+</div>
+
+<div id="main-media">
+  <p>Drop a file to upload or <button type="button">browse</button> or <button type="button">embed URL</button></p>
+  <input id="photosInput" accept="video/*,.mp3,image/jpeg,image/png" type="file" class="hide" data-test="wrong-box">
+</div>
+<div id="gallery">
+  <div id="tiles"></div>
+  <input accept="image/jpeg,image/png,image/gif,image/webp" id="photosInput" type="file" class="hide" data-test="gallery-box">
+  <button type="button" id="add-image">Add image</button> <button type="button">browse</button>
+</div>
+
+<textarea placeholder="Title" aria-label="Title" aria-multiline="true" rows="1"></textarea>
+<div data-tag="text-editor-remirror-wrapper">
+  <div id="editor" contenteditable="true" role="textbox" aria-multiline="true" aria-label="Text input field for post content"></div>
+</div>
+
+<div data-tag="settings-panel-root">
+  <div data-tag="editor-setting-section-root">
+    <h3 data-tag="editor-setting-section-title">Audience</h3>
+    <label data-tag="public"><input type="radio" name="access" aria-label="Free access" value="public"> Free access Let everyone access this post</label>
+    <label><input type="radio" name="access" value="paid"> Paid access Limit access to paid members and people who purchase this post</label>
+    <div id="paid-more" class="hide">
+      <label><input type="checkbox" role="checkbox" aria-label="Toggle tier selection" id="paid-members-toggle"> Paid members</label>
+      <button type="button" aria-label="Select tiers" aria-expanded="false" aria-haspopup="menu" id="tierlist"><div>All tiers</div><span aria-hidden="true"></span></button>
+      <div id="tier-options" class="hide" role="menu">
+        <div role="menuitemcheckbox" aria-checked="true" id="t-all">All tiers</div>
+        <div role="menuitemcheckbox" aria-checked="false" id="t-back">Back End View</div>
+        <div role="menuitemcheckbox" aria-checked="false" id="t-machine">Machine Room</div>
+      </div>
+      <label><input type="checkbox" role="checkbox" aria-label="Toggle one-time payments" id="sell-post-toggle"> Sell this post</label>
+      <button type="button">More options</button>
+    </div>
+  </div>
+  <div data-tag="editor-setting-section-root">
+    <h3 data-tag="editor-setting-section-title">Collaborators</h3>
+    <button type="button" aria-disabled="true">Add</button>
+  </div>
+  <div data-tag="editor-setting-section-root">
+    <h3 data-tag="editor-setting-section-title">Add to collection</h3>
+    <button type="button" id="collection">+ Add to collection</button>
+    <div id="collection-list" class="hide" role="menu">
+      <div role="menuitemcheckbox" aria-checked="false" id="c-machine">Machine room</div>
+      <div role="menuitemcheckbox" aria-checked="false" id="c-diary">Set diary</div>
+      <a id="create-collection"><div>Create collection</div></a>
+    </div>
+  </div>
+  <div data-tag="editor-setting-section-root">
+    <div><h3 data-tag="editor-setting-section-title">Set publish date</h3>
+      <button id="scheduled-for-toggle" role="switch" type="button" aria-checked="false"><span></span></button></div>
+    <div id="when" class="hide">
+      <div>
+        <div>
+          <div><label for="date" id="date-label">Schedule Date</label></div>
+          <div><div><div><input id="date" type="date"></div></div></div>
+        </div>
+        <div>
+          <div><label for="time-box" id="time-box-label">Schedule Time</label></div>
+          <div><div><div><input id="time-box" type="time"></div></div></div>
+        </div>
+        <p id="zone">EST</p>
+        <span>i</span>
+      </div>
+    </div>
+  </div>
+  <div data-tag="editor-setting-section-root">
+    <h3 data-tag="editor-setting-section-title">More settings</h3>
+    <label for="post-editor-comments-access-menu" id="post-editor-comments-access-menu-label">Allow comments dropdown</label>
+    <button type="button" id="post-editor-comments-access-menu" role="combobox">Anyone with access</button>
+    <div id="comment-options" class="hide" role="listbox">
+      <div role="option" aria-selected="true">Anyone with access</div>
+      <div role="option" aria-selected="false">No one</div>
+    </div>
+    <div><div><div id="tag-chips"></div><input role="combobox" data-tag="tags-auto-complete" placeholder="Start typing..." type="text"></div></div>
+  </div>
+</div>
+
+<div id="edit-image" class="hide">
+  <h2>Edit image</h2>
+  <p>Add caption</p>
+  <textarea id="inline-caption" placeholder="Write a caption..." maxlength="140"></textarea>
+  <p>Add alt text</p>
+  <textarea id="inline-alt" placeholder="Describe this image..." maxlength="2000"></textarea>
+  <button type="button">Crop</button> <button type="button">Add link</button> <button type="button">Replace</button>
+  <button type="button" id="inline-delete">Delete</button>
+</div>
+
+<div id="caption-dialog" role="dialog" class="hide">
+  <div id="add-captions-dialog" data-tag="dialog-container">
+    <div data-tag="dialog-header"><button type="button" data-tag="dialog-close-icon">Close Dialog</button><h2>Add Captions</h2></div>
+    <div><div id="alt-text-toggle-label"><p>Include alt text to describe your image</p></div>
+      <button role="switch" type="button" aria-checked="false" aria-labelledby="alt-text-toggle-label" id="alt-switch"><span></span></button></div>
+    <div id="alt-box" class="hide"><label id="alt-field-label" for="alt-field">Alt text</label>
+      <textarea id="alt-field" aria-invalid="false" aria-labelledby="alt-field-label" aria-multiline="true" data-tag="alt-text-input" placeholder="Alt text" rows="2"></textarea></div>
+    <label data-tag="caption-text-input-label" for="caption-field">Caption</label>
+    <textarea id="caption-field" data-tag="caption-text-input" placeholder="Caption" maxlength="140"></textarea>
+    <p data-tag="caption-text-input-charCount" aria-label="0 of 140">0 / 140</p>
+    <div data-tag="dialog-footer">
+      <button type="button" data-tag="caption-save-button">Save</button>
+      <button type="button" data-tag="dialog-action-secondary">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  var mode = (location.search.match(/mode=(\w+)/) || [])[1] || "editor";
+  window.__mode = mode;
+  window.__published = false;
+  window.__deleted = false;
+  window.__made = false;
+  window.__wrongBox = false;
+  var $ = function (id) { return document.getElementById(id); };
+  var ed = $("editor");
+  var takesPaste = mode !== "plain" && mode !== "full";
+  // paidfirst takes paste too.
+  var UPLOADED = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+  var UNMARKED = mode === "unmarked";
+  var UPLOAD_MS = UNMARKED ? 6000 : 2500;
+  var current = null;
+  var picked = null;
+
+  // A picture in the text is selected on the mouse going down; its panel shows.
+  ed.addEventListener("mousedown", function (e) {
+    var at = document.elementFromPoint(e.clientX, e.clientY);
+    if (!at || at.tagName !== "IMG" || !ed.contains(at)) return;
+    if (at.closest("[aria-busy=true], [data-mock-uploading]")) { window.__pressedTooSoon = true; return; }
+    picked = at;
+    $("inline-caption").value = picked.dataset.caption || "";
+    $("inline-alt").value = picked.dataset.alt || "";
+    show("edit-image", true);
+  });
+  $("inline-caption").addEventListener("input", function () { if (picked) picked.dataset.caption = $("inline-caption").value; });
+  $("inline-alt").addEventListener("input", function () { if (picked) picked.dataset.alt = $("inline-alt").value; });
+  $("inline-delete").addEventListener("click", function () { window.__deleted = true; });
+  // Leaving the picture closes its panel.
+  document.addEventListener("keydown", function (e) { if (e.key === "Escape") { show("edit-image", false); picked = null; } });
+
+  // Paid posts show a line in the text box that nobody types.
+  function paywall(on) {
+    var line = ed.querySelector("[data-test=paywall]");
+    if (on && !line) {
+      line = document.createElement("div");
+      line.setAttribute("contenteditable", "false");
+      line.setAttribute("data-test", "paywall");
+      line.textContent = "Paid access starts here";
+      ed.insertBefore(line, ed.firstChild);
+    }
+    if (!on && line) line.remove();
+  }
+
+  function show(id, on) { $(id).classList.toggle("hide", !on); }
+  $("publish").addEventListener("click", function () { window.__published = "publish"; });
+  $("schedule").addEventListener("click", function () {
+    if (!$("edit-image").classList.contains("hide")) { window.__scheduleIgnored = true; return; }
+    window.__published = "schedule";
+  });
+  $("delete-draft").addEventListener("click", function () { window.__deleted = true; });
+  $("create-collection").addEventListener("click", function () { window.__made = true; });
+  $("topmenu").addEventListener("click", function () { show("topmenu-list", true); });
+
+  // The zone the page shows: this computer's own, except in batchmiss.
+  var zone = new Intl.DateTimeFormat("en-US", { timeZoneName: "short" }).formatToParts(new Date("2026-11-10T09:00:00"))
+    .filter(function (p) { return p.type === "timeZoneName"; })[0].value;
+  $("zone").textContent = mode === "batchmiss" ? "ZZT" : zone;
+
+  function addTile(file) {
+    var tile = document.createElement("div");
+    tile.className = "tile";
+    var inner = document.createElement("div");
+    var bar = document.createElement("div");
+    var img = document.createElement("img");
+    img.setAttribute("data-tag", "gallery-image");
+    img.src = URL.createObjectURL(file);
+    if (UNMARKED) {
+      img.src = UPLOADED;
+      tile.setAttribute("data-mock-uploading", "true");
+      setTimeout(function () { tile.removeAttribute("data-mock-uploading"); }, UPLOAD_MS);
+    } else {
+      tile.setAttribute("aria-busy", "true");
+      if (mode !== "stuck") {
+        setTimeout(function () { img.src = UPLOADED; tile.removeAttribute("aria-busy"); }, UPLOAD_MS);
+      }
+    }
+    if (mode !== "batchsoft") {
+      var menu = document.createElement("button");
+      menu.type = "button";
+      menu.setAttribute("aria-label", "Menu for additional actions on the uploaded media");
+      menu.setAttribute("aria-haspopup", "menu");
+      menu.textContent = "...";
+      bar.appendChild(menu);
+      var list = document.createElement("div");
+      list.className = "hide";
+      list.setAttribute("role", "menu");
+      ["Add image", "Edit caption", "Delete"].forEach(function (w) {
+        var b = document.createElement("button");
+        b.type = "button";
+        b.setAttribute("role", "menuitem");
+        b.textContent = w;
+        b.addEventListener("click", function () {
+          list.classList.add("hide");
+          if (w === "Delete") window.__deleted = true;
+          if (w === "Edit caption") {
+            if (tile.hasAttribute("data-mock-uploading") || tile.getAttribute("aria-busy") === "true") { window.__pressedTooSoon = true; return; }
+            current = tile;
+            $("caption-field").value = tile.dataset.caption || "";
+            $("alt-field").value = tile.dataset.alt || "";
+            show("caption-dialog", true);
+          }
+        });
+        list.appendChild(b);
+      });
+      bar.appendChild(list);
+      menu.addEventListener("click", function () { list.classList.remove("hide"); });
+    }
+    inner.appendChild(bar);
+    inner.appendChild(img);
+    tile.appendChild(inner);
+    $("tiles").appendChild(tile);
+  }
+
+  // The caption box: the alt text box shows once the switch is on.
+  $("alt-switch").addEventListener("click", function () {
+    var on = $("alt-switch").getAttribute("aria-checked") !== "true";
+    $("alt-switch").setAttribute("aria-checked", on ? "true" : "false");
+    show("alt-box", on);
+  });
+  document.querySelector("[data-tag=caption-save-button]").addEventListener("click", function () {
+    if (current) {
+      if ($("caption-field").value) current.dataset.caption = $("caption-field").value;
+      if ($("alt-switch").getAttribute("aria-checked") === "true" && $("alt-field").value) current.dataset.alt = $("alt-field").value;
+    }
+    show("caption-dialog", false);
+  });
+  document.querySelector("[data-tag=dialog-action-secondary]").addEventListener("click", function () { show("caption-dialog", false); });
+
+  if (takesPaste) {
+    ed.addEventListener("paste", function (e) {
+      e.preventDefault();
+      var dt = e.clipboardData;
+      var sel = window.getSelection();
+      var range = sel.rangeCount ? sel.getRangeAt(0) : null;
+      if (dt.files && dt.files.length) {
+        var block = range ? range.startContainer : null;
+        while (block && block !== ed && block.nodeName !== "P") block = block.parentNode;
+        var p = document.createElement("p");
+        Array.prototype.forEach.call(dt.files, function (f) {
+          var wrap = document.createElement("span");
+          wrap.setAttribute(UNMARKED ? "data-mock-uploading" : "aria-busy", "true");
+          var img = document.createElement("img");
+          img.src = UNMARKED ? UPLOADED : URL.createObjectURL(f);
+          wrap.appendChild(img);
+          p.appendChild(wrap);
+        });
+        setTimeout(function () {
+          if (block && block !== ed) block.replaceWith(p); else ed.appendChild(p);
+        }, 200);
+        // Once uploaded, the editor draws the picture again: a fresh copy in
+        // its place, the uploaded picture, no longer marked as loading.
+        setTimeout(function () {
+          Array.prototype.forEach.call(p.querySelectorAll("span[aria-busy], span[data-mock-uploading]"), function (wrap) {
+            var old = wrap.querySelector("img");
+            var again = document.createElement("img");
+            again.src = UPLOADED;
+            if (old.dataset.alt) again.dataset.alt = old.dataset.alt;
+            if (old.dataset.caption) again.dataset.caption = old.dataset.caption;
+            again.setAttribute("data-redrawn", "1");
+            wrap.replaceWith(again);
+          });
+        }, UPLOAD_MS);
+        return;
+      }
+      var html = dt.getData("text/html");
+      var doc = new DOMParser().parseFromString(html, "text/html");
+      doc.querySelectorAll("script, style").forEach(function (x) { x.remove(); });
+      if (range) range.deleteContents();
+      Array.prototype.slice.call(doc.body.childNodes).forEach(function (n) { ed.appendChild(n); });
+    });
+  }
+
+  if (mode === "full") {
+    document.querySelector("textarea[aria-label=Title]").value = "Beth's own title";
+    ed.innerHTML = "<p>Beth's own words.</p>";
+  }
+
+  document.querySelector("[data-test=wrong-box]").addEventListener("change", function () { window.__wrongBox = true; });
+  document.querySelector("[data-test=gallery-box]").addEventListener("change", function (e) {
+    var files = e.target.files;
+    setTimeout(function () { Array.prototype.forEach.call(files, addTile); }, 300);
+  });
+
+  document.querySelectorAll("input[name=access]").forEach(function (r) {
+    r.addEventListener("change", function () {
+      var paid = document.querySelector("input[value=paid]").checked;
+      show("paid-more", paid);
+      paywall(paid);
+    });
+  });
+  if (mode === "paidfirst") {
+    document.querySelector("input[value=paid]").checked = true;
+    show("paid-more", true);
+    paywall(true);
+  }
+  $("tierlist").addEventListener("click", function () { show("tier-options", true); $("tierlist").setAttribute("aria-expanded", "true"); });
+  function drawTiers() {
+    var on = Array.prototype.filter.call(document.querySelectorAll("#tier-options [role=menuitemcheckbox]"), function (o) {
+      return o.getAttribute("aria-checked") === "true";
+    });
+    var all = $("t-all").getAttribute("aria-checked") === "true";
+    $("tierlist").firstChild.textContent = all ? "All tiers" : on.length + (on.length === 1 ? " tier" : " tiers");
+  }
+  document.querySelectorAll("#tier-options [role=menuitemcheckbox]").forEach(function (o) {
+    o.addEventListener("click", function () {
+      if (o.id === "t-all") {
+        document.querySelectorAll("#tier-options [role=menuitemcheckbox]").forEach(function (x) { x.setAttribute("aria-checked", x === o ? "true" : "false"); });
+      } else {
+        o.setAttribute("aria-checked", o.getAttribute("aria-checked") === "true" ? "false" : "true");
+        $("t-all").setAttribute("aria-checked", "false");
+      }
+      drawTiers();
+    });
+  });
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape") ["tier-options", "collection-list", "comment-options", "topmenu-list"].forEach(function (id) { show(id, false); });
+  });
+
+  $("collection").addEventListener("click", function () { show("collection-list", true); });
+  document.querySelectorAll("#collection-list [role=menuitemcheckbox]").forEach(function (o) {
+    o.addEventListener("click", function () {
+      o.setAttribute("aria-checked", o.getAttribute("aria-checked") === "true" ? "false" : "true");
+    });
+  });
+
+  var tog = $("scheduled-for-toggle");
+  tog.addEventListener("click", function () {
+    var on = tog.getAttribute("aria-checked") !== "true";
+    tog.setAttribute("aria-checked", on ? "true" : "false");
+    show("when", on);
+  });
+
+  var com = $("post-editor-comments-access-menu");
+  com.addEventListener("click", function () { show("comment-options", true); });
+  document.querySelectorAll("#comment-options [role=option]").forEach(function (o) {
+    o.addEventListener("click", function () {
+      document.querySelectorAll("#comment-options [role=option]").forEach(function (x) { x.setAttribute("aria-selected", x === o ? "true" : "false"); });
+      com.textContent = o.textContent;
+      show("comment-options", false);
+    });
+  });
+  var tagBox = document.querySelector("input[data-tag=tags-auto-complete]");
+  tagBox.addEventListener("keydown", function (e) {
+    if (e.key === "Enter" && tagBox.value.trim()) {
+      var chip = document.createElement("span");
+      chip.className = "chip";
+      chip.textContent = tagBox.value.trim();
+      $("tag-chips").appendChild(chip);
+      tagBox.value = "";
+    }
+  });
+})();
+</script>
+<pre id="patron-desk-test-result">not run</pre>
+<script src="../../extension/selectors.js"></script>
+<script src="../../extension/filler.js"></script>
+<script src="../../extension/overlay.js"></script>
+<script src="../../extension/scheduler.js"></script>
+<script src="../js/driver.js"></script>
+</body>
+</html>

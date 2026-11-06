@@ -1,0 +1,6 @@
+# Post packages are content, not code. They stay on this PC.
+packages/
+# Saved copies of Patreon's page hold account details. They stay on this PC.
+reference/
+tests/pages/generated/
+__pycache__/

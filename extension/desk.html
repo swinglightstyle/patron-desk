@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Patron desk</title>
+<link rel="stylesheet" href="desk.css">
+</head>
+<body>
+<main>
+  <h1>Patron desk</h1>
+  <p id="stale" class="miss" hidden></p>
+  <p class="lead">Fills Patreon's new post form from a post package on this computer. It never presses Publish. It presses Schedule only in a batch you approved with go-live.</p>
+
+  <section id="batch-part" hidden>
+    <h2>Batch</h2>
+    <p id="batch-says"></p>
+    <p><button id="start">Start the batch</button> <button id="copy-batch">Copy results</button></p>
+    <div id="batch-result"></div>
+  </section>
+
+  <section id="folder-part">
+    <h2>Packages folder</h2>
+    <p id="folder-says">No folder chosen yet.</p>
+    <p>
+      <button id="pick">Choose the packages folder</button>
+      <button id="allow" hidden>Allow reading the folder again</button>
+      <button id="reload" hidden>Read the folder again</button>
+    </p>
+  </section>
+
+  <section>
+    <h2>Waiting to go up</h2>
+    <p class="how">Press Fill beside a post. The desk opens Patreon's new post page in a new window, checks you are signed in, and fills it. It never presses Publish.</p>
+    <div id="queue"><p class="quiet">Nothing yet.</p></div>
+  </section>
+
+  <section>
+    <h2>Already filled</h2>
+    <div id="done"><p class="quiet">Nothing yet.</p></div>
+  </section>
+
+  <section>
+    <h2>Last fill</h2>
+    <div id="result"><p class="quiet">Nothing filled yet.</p></div>
+  </section>
+</main>
+<script src="version.js"></script>
+<script src="selectors.js"></script>
+<script src="settings.js"></script>
+<script src="overlay.js"></script>
+<script src="store.js"></script>
+<script src="desk.js"></script>
+</body>
+</html>

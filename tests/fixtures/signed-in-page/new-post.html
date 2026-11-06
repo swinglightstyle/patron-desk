@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width">
+<meta name="csrf-token" content="FAKEMETA1234567890abcdef">
+<title>A made-up signed-in page, for the tests</title>
+<!-- Every private value here is made up. The tests check none of them is printed or copied. -->
+<script>
+  window.bootstrap = {"user_id": 98765432, "email": "beth.fake.person@example.com",
+    "csrf_token": "csrf-FAKE-0123456789abcdef", "session": "sess_FAKEFAKEFAKE12345678",
+    "access_token": "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJmYWtlIn0.c2lnbmF0dXJlZmFrZQ"};
+</script>
+</head>
+<body>
+<button type="button" aria-label="Signed in as beth.fake.person@example.com">Account</button>
+<form>
+  <input type="hidden" name="authenticity" value="HIDDENFAKE0123456789abcdef">
+  <textarea aria-label="Title" placeholder="Title"></textarea>
+  <div contenteditable="true" aria-label="Text input field for post content" data-owner="creator_id=55554444"></div>
+  <input type="file" id="photosInput" accept="image/*">
+  <button type="button" data-tag="make-a-post-action-publish">Publish</button>
+</form>
+</body>
+</html>

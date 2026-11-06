@@ -1,0 +1,293 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Desk batch check</title>
+<script>
+  /*
+    Runs the desk's batch loop (desk.js runBatch) against a stand-in
+    packages folder in memory and a stand-in Patreon tab. Nothing is real:
+    no folder is touched and no page is opened.
+
+    ?scenario=a  three posts: two to schedule, one already in the log
+    ?scenario=b  the second post's post.json changed after approval
+    ?scenario=c  the first post fails a check in the fill
+    ?scenario=d  the approval is three days old
+    ?scenario=e  Fill one post: a new window opens on the new post page, signed in
+    ?scenario=f  Fill one post: the new window lands on Patreon's sign-in page
+    ?scenario=g  Fill and schedule one post: every check passes, Schedule is pressed
+    ?scenario=h  Fill and schedule one post: a check fails, nothing is pressed
+    ?scenario=i  Fill and schedule one post: the time is past, nothing is opened
+    ?scenario=j  Fill one post: the filler on the page is an old version, nothing is filled
+    ?scenario=k  Fill and schedule: the page stays in the editor, its Schedule button now says Update
+    ?scenario=l  Fill and schedule: the page stays in the editor, its Schedule button still says Schedule
+  */
+  window.__errors = [];
+  window.addEventListener("error", function (e) { window.__errors.push(e.message); });
+  var scenario = (location.search.match(/scenario=(\w)/) || [])[1] || "a";
+
+  function ymd(d) {
+    var m = d.getMonth() + 1, day = d.getDate();
+    return d.getFullYear() + "-" + (m < 10 ? "0" : "") + m + "-" + (day < 10 ? "0" : "") + day;
+  }
+  var now = new Date();
+  var TODAY = ymd(now);
+  var TOMORROW = ymd(new Date(now.getTime() + 86400000));
+  var OLD = ymd(new Date(now.getTime() - 3 * 86400000));
+
+  function notFound() { var e = new Error("not found"); e.name = "NotFoundError"; return e; }
+
+  function Dir(name, tree) { this.kind = "directory"; this.name = name; this.tree = tree; }
+  Dir.prototype.getDirectoryHandle = async function (n) {
+    var v = this.tree[n];
+    if (!(v instanceof Dir)) throw notFound();
+    return v;
+  };
+  Dir.prototype.getFileHandle = async function (n, opts) {
+    var dir = this;
+    if (!(n in dir.tree)) {
+      if (opts && opts.create) dir.tree[n] = ""; else throw notFound();
+    }
+    if (dir.tree[n] instanceof Dir) throw notFound();
+    return {
+      kind: "file", name: n,
+      getFile: async function () { return new File([dir.tree[n]], n); },
+      createWritable: async function (o) {
+        var buf = o && o.keepExistingData ? dir.tree[n] : "";
+        var pos = 0;
+        return {
+          seek: async function (p) { pos = p; },
+          write: async function (t) { buf = buf.slice(0, pos) + t + buf.slice(pos + t.length); pos += t.length; },
+          close: async function () { dir.tree[n] = buf; }
+        };
+      }
+    };
+  };
+  Dir.prototype.entries = async function* () {
+    for (var k in this.tree) yield [k, this.tree[k] instanceof Dir ? this.tree[k] : { kind: "file", name: k }];
+  };
+  Dir.prototype.queryPermission = async function () { return "granted"; };
+  Dir.prototype.requestPermission = async function () { return "granted"; };
+
+  function post(title, time) {
+    return JSON.stringify({
+      format: "patron-desk-post-2", title: title, body_html: "<p>" + title + " body.</p>",
+      access: { type: "free" }, images: [], image_text: "caption", collection: null, tags: [], comments: null,
+      schedule: { date: TOMORROW, time: time }, notes: []
+    }, null, 2);
+  }
+
+  var LOG_START = "# run date\tpackage\ttitle\tscheduled for\tresult\tdetail\n" +
+    "2026-11-01\tp3\tThird\t" + TOMORROW + " 12:00\tscheduled\thttps://example.invalid/posts/3\n";
+  var root = new Dir("packages", {
+    p1: new Dir("p1", { "post.json": post("First", "10:00") }),
+    p2: new Dir("p2", { "post.json": post("Second", "11:00") }),
+    p3: new Dir("p3", { "post.json": post("Third", "12:00") }),
+    _batches: new Dir("_batches", {}),
+    "go-live-log.txt": LOG_START
+  });
+
+  var state = { url: "https://www.patreon.com/posts/new#patron-desk-batch=test-batch-1", sent: [], posted: 0, windows: [] };
+  window.__state = state;
+  window.chrome = {
+    runtime: { id: "test", onMessage: { addListener: function () {} }, getManifest: function () { return { version: window.PatronDesk.VERSION }; } },
+    windows: {
+      update: async function () {},
+      create: async function (o) {
+        state.windows.push(o.url);
+        state.url = scenario === "f" ? "https://www.patreon.com/login?ru=%2Fposts%2Fnew" : o.url;
+        return { id: 2, tabs: [{ id: 1, windowId: 2, url: state.url }] };
+      }
+    },
+    runtime_version: null,
+    scripting: { executeScript: async function () {} },
+    tabs: {
+      get: async function (id) { return { id: 1, windowId: 1, status: "complete", url: state.url }; },
+      query: async function () { return [{ id: 1, windowId: 1, url: state.url }]; },
+      update: async function (id, o) { if (o.url) state.url = o.url; return {}; },
+      sendMessage: async function (id, msg) {
+        var who = msg.name || (msg.pkg && msg.pkg.name) || "";
+        // Questions about the page are not actions on it: only fills and presses are counted.
+        if (msg.type !== "patron-desk-ping" && msg.type !== "patron-desk-schedule-state") state.sent.push(msg.type.replace("patron-desk-", "") + ":" + who);
+        if (msg.type === "patron-desk-ping") return { here: true, formReady: true, version: scenario === "j" ? "0.2.0" : window.PatronDesk.VERSION };
+        if (msg.type === "patron-desk-fill") {
+          var fail = (scenario === "c" || scenario === "h") && who === "p1";
+          state.sentSchedule = msg.pkg.schedule;
+          return {
+            report: { title: msg.pkg.title, items: [], notes: [] },
+            verdict: fail ? { pass: false, blocking: [{ part: "Alt text 1", say: "Could not find where alt text goes." }] }
+                          : { pass: true, blocking: [] }
+          };
+        }
+        if (msg.type === "patron-desk-press-schedule") {
+          state.posted += 1;
+          if (scenario !== "k" && scenario !== "l") state.url = "https://www.patreon.com/posts/scheduled-" + state.posted;
+          return { pressed: true };
+        }
+        if (msg.type === "patron-desk-schedule-state") return { button: scenario === "k" ? "Update" : "Schedule" };
+      }
+    }
+  };
+</script>
+</head>
+<body>
+<p id="stale" hidden></p>
+<section id="batch-part" hidden><p id="batch-says"></p><button id="start">Start</button><button id="copy-batch">Copy results</button><div id="batch-result"></div></section>
+<p id="folder-says"></p>
+<button id="pick"></button><button id="allow"></button><button id="reload"></button>
+<div id="queue"></div><div id="done"></div><div id="result"></div>
+<pre id="patron-desk-test-result">not run</pre>
+<script src="../../extension/version.js"></script>
+<script src="../../extension/selectors.js"></script>
+<script src="../../extension/settings.js"></script>
+<script src="../../extension/overlay.js"></script>
+<script src="../../extension/store.js"></script>
+<script>
+  // Memory instead of the browser's database, so the stand-in folder can be kept.
+  (function () {
+    var mem = {};
+    window.PatronDesk.store = {
+      get: async function (k) { return mem[k]; },
+      set: async function (k, v) { mem[k] = v; }
+    };
+  })();
+  window.showDirectoryPicker = async function () { return root; };
+  // Beth's yes to "Schedule this post?", counted.
+  window.__confirms = 0;
+  window.confirm = function () { window.__confirms += 1; return true; };
+</script>
+<script>
+  (async function () {
+    async function sha(text) {
+      var buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+      return Array.prototype.map.call(new Uint8Array(buf), function (b) { return (b < 16 ? "0" : "") + b.toString(16); }).join("");
+    }
+    var entries = [];
+    var names = ["p1", "p2", "p3"];
+    var times = ["10:00", "11:00", "12:00"];
+    var titles = ["First", "Second", "Third"];
+    for (var i = 0; i < 3; i++) {
+      entries.push({ name: names[i], title: titles[i], date: TOMORROW, time: times[i], access: { type: "free" }, images: 0,
+        post_json_sha256: await sha(root.tree[names[i]].tree["post.json"]) });
+    }
+    root.tree._batches.tree["batch-test-batch-1.json"] = JSON.stringify({
+      format: "patron-desk-batch-1", id: "test-batch-1", approved_on: scenario === "d" ? OLD : TODAY,
+      approved_by: "test", packages: entries
+    });
+    if (scenario === "b") root.tree.p2.tree["post.json"] = post("Second, changed", "11:00");
+    window.__ready = true;
+  })();
+</script>
+<script src="../../extension/desk.js"></script>
+<script>
+  (async function () {
+    function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+    while (!window.__ready) await sleep(50);
+    document.getElementById("pick").click();
+    // Wait for the desk to read the folder and draw its queue.
+    var drawn = Date.now() + 30000;
+    while (!document.querySelector("#queue button") && Date.now() < drawn) await sleep(200);
+    var single = "efghijkl".indexOf(scenario) !== -1;
+    var word = "ghikl".indexOf(scenario) !== -1 ? "Fill and schedule" : "Fill";
+    var go = single ? Array.prototype.filter.call(document.querySelectorAll("#queue button"), function (b) { return b.textContent === word; })[0]
+      : document.getElementById("start");
+    if (scenario === "i") {
+      // A time already past: the first post's date box set to yesterday.
+      var dateBox = go.parentElement.querySelector("input[type=date]");
+      dateBox.value = OLD;
+      dateBox.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+    go.click();
+    await sleep(200);
+    var end = Date.now() + 240000;
+    while (go.disabled && Date.now() < end) await sleep(500);
+
+    var log = root.tree["go-live-log.txt"];
+    var lines = log.split("\n").filter(function (l) { return l && l.charAt(0) !== "#"; });
+    var added = lines.slice(1);
+    var said = document.getElementById("batch-result").textContent;
+    var checks = [];
+    function check(name, pass, detail) { checks.push({ name: name, pass: !!pass, detail: detail === undefined ? "" : String(detail) }); }
+    check("no errors", window.__errors.length === 0, window.__errors.join(" | "));
+    check("the log kept its old lines", log.indexOf(LOG_START) === 0, log);
+    if (scenario === "a") {
+      check("filled and scheduled p1 then p2, nothing else", state.sent.join(",") === "fill:p1,press-schedule:p1,fill:p2,press-schedule:p2", state.sent.join(","));
+      check("two log lines added, both scheduled", added.length === 2 && added.every(function (l) { return l.split("\t")[4] === "scheduled"; }), added.join(" | "));
+      check("log names the post's page", added[0] && added[0].split("\t")[5] === "https://www.patreon.com/posts/scheduled-1", added[0]);
+      check("p3 skipped as already scheduled", /Third: already scheduled/.test(said), said);
+      check("says the batch is done", /Batch done\. 2 scheduled/.test(said), said);
+    } else if (scenario === "b") {
+      check("scheduled p1, then stopped before filling p2", state.sent.join(",") === "fill:p1,press-schedule:p1", state.sent.join(","));
+      check("log: p1 scheduled, p2 stopped", added.length === 2 && added[0].split("\t")[4] === "scheduled" && added[1].split("\t")[1] === "p2" && added[1].split("\t")[4] === "stopped", added.join(" | "));
+      check("says p2 changed", /changed after the batch was approved/.test(said), said);
+    } else if (scenario === "c") {
+      check("filled p1 and pressed nothing", state.sent.join(",") === "fill:p1", state.sent.join(","));
+      check("log: p1 stopped with the failing check", added.length === 1 && added[0].split("\t")[4] === "stopped" && /Alt text 1/.test(added[0]), added.join(" | "));
+      check("says the post is left filled", /filled and waiting/.test(said), said);
+    } else if (scenario === "e") {
+      var shown = document.getElementById("result").textContent;
+      check("opened one new window on the new post page", state.windows.join(",") === window.PatronDesk.PAGE.newPostPage, state.windows.join(","));
+      check("filled the first post there", state.sent.join(",") === "fill:p1", state.sent.join(","));
+      check("says it is signed in and filled", /Signed in\. Filled a fresh post in a new window\./.test(shown), shown);
+      check("offers the copy box", !!document.querySelector("#result button.copybox[aria-label='Copy results'] svg"));
+      var text = window.PatronDesk.resultsText({ title: "First", items: [{ part: "Title", status: "ok", say: "Filled." }], said: "Signed in." });
+      check("the copied results are plain lines", /^Patron desk results, .+, version \d+\.\d+\.\d+\nPost: First\nSigned in\.\nOK  Title: Filled\.$/.test(text) && text.indexOf("version " + window.PatronDesk.VERSION) !== -1, text);
+      check("log unchanged by a single fill", added.length === 0, added.join(" | "));
+    } else if (scenario === "f") {
+      var shown2 = document.getElementById("result").textContent;
+      check("opened a new window", state.windows.length === 1);
+      check("sent nothing to a sign-in page", state.sent.length === 0, state.sent.join(","));
+      check("says to sign in", /not signed in to Patreon/.test(shown2), shown2);
+    } else if (scenario === "g") {
+      var shownG = document.getElementById("result").textContent;
+      check("asked Beth once", window.__confirms === 1, window.__confirms);
+      check("opened one new window", state.windows.length === 1);
+      check("filled with the date and time from the desk", state.sentSchedule && state.sentSchedule.date === TOMORROW && state.sentSchedule.time === "10:00", JSON.stringify(state.sentSchedule));
+      check("filled, then pressed Schedule", state.sent.join(",") === "fill:p1,press-schedule:p1", state.sent.join(","));
+      check("logged as scheduled, with the post's page", added.length === 1 && added[0].split("\t")[1] === "p1" && added[0].split("\t")[3] === TOMORROW + " 10:00" &&
+        added[0].split("\t")[4] === "scheduled" && added[0].split("\t")[5].indexOf("https://www.patreon.com/posts/scheduled-1") === 0, added.join(" | "));
+      check("says it is scheduled", /scheduled it for/.test(shownG), shownG);
+    } else if (scenario === "h") {
+      var shownH = document.getElementById("result").textContent;
+      check("filled, and pressed nothing", state.sent.join(",") === "fill:p1", state.sent.join(","));
+      check("logged as stopped", added.length === 1 && added[0].split("\t")[4] === "stopped", added.join(" | "));
+      check("says Schedule was not pressed", /Schedule was not pressed/.test(shownH), shownH);
+    } else if (scenario === "i") {
+      var shownI = document.getElementById("result").textContent;
+      check("opened nothing", state.windows.length === 0 && state.sent.length === 0, state.windows.join(","));
+      check("did not ask", window.__confirms === 0);
+      check("says the time is too soon", shownI.indexOf("past, or less than " + window.PatronDesk.SETTINGS.earliestMinutes + " minutes away") !== -1, shownI);
+      check("the minimum is Beth's 5 minutes", window.PatronDesk.SETTINGS.earliestMinutes === 5);
+      check("log unchanged", added.length === 0);
+    } else if (scenario === "j") {
+      var shownJ = document.getElementById("result").textContent;
+      check("filled nothing with an old filler", state.sent.length === 0, state.sent.join(","));
+      check("says to reload", /version 0\.2\.0/.test(shownJ) && /round arrow/.test(shownJ), shownJ);
+      check("no reload reminder on the desk when the manifest matches", document.getElementById("stale").hidden);
+    } else if (scenario === "k") {
+      check("pressed Schedule", state.sent.join(",") === "fill:p1,press-schedule:p1", state.sent.join(","));
+      check("logged as scheduled, by the changed button", added.length === 1 && added[0].split("\t")[4] === "scheduled" &&
+        /now says "Update"/.test(added[0]), added.join(" | "));
+      check("says it is scheduled", /scheduled it for/.test(document.getElementById("result").textContent));
+    } else if (scenario === "l") {
+      var shownL = document.getElementById("result").textContent;
+      check("pressed Schedule", state.sent.join(",") === "fill:p1,press-schedule:p1", state.sent.join(","));
+      check("logged as unconfirmed, not stopped", added.length === 1 && added[0].split("\t")[4] === "unconfirmed", added.join(" | "));
+      check("says to look in Patreon, and that batches leave it out", /could not see that it took/.test(shownL) && /left out of later batches/.test(shownL), shownL);
+    } else if (scenario === "d") {
+      check("sent nothing to the page", state.sent.length === 0, state.sent.join(","));
+      check("log unchanged", added.length === 0, added.join(" | "));
+      check("says the approval is too old", /not from today or yesterday/.test(said), said);
+    }
+    var failed = checks.filter(function (c) { return !c.pass; }).length;
+    document.getElementById("patron-desk-test-result").textContent =
+      JSON.stringify({ mode: "desk-" + scenario, passed: checks.length - failed, failed: failed, checks: checks, report: [] });
+  })().catch(function (e) {
+    document.getElementById("patron-desk-test-result").textContent =
+      JSON.stringify({ mode: "desk-" + scenario, passed: 0, failed: 1, report: [],
+        checks: [{ name: "the check page ran", pass: false, detail: String(e && e.stack ? e.stack : e) + " | " + window.__errors.join(" | ") + " | queue: " +
+          document.getElementById("queue").textContent.slice(0, 300) + " | folder: " + document.getElementById("folder-says").textContent }] });
+  });
+</script>
+</body>
+</html>

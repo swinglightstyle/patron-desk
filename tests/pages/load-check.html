@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Load check</title>
+<script>
+  // Catches any error while the extension's files load, and stands in for
+  // the parts of the browser only an extension has.
+  window.__errors = [];
+  window.addEventListener("error", function (e) {
+    window.__errors.push((e.filename || "").split("/").pop() + ": " + e.message);
+  });
+  window.chrome = {
+    runtime: { id: "test", getURL: function (p) { return p; }, getManifest: function () { return { version: "test" }; }, onMessage: { addListener: function (f) { window.__listener = f; } } },
+    action: { onClicked: { addListener: function () {} } },
+    tabs: {}, windows: {}, scripting: {}
+  };
+</script>
+</head>
+<body>
+<p id="stale" hidden></p>
+<p id="folder-says"></p>
+<button id="pick"></button><button id="allow"></button><button id="reload"></button>
+<div id="queue"></div><div id="done"></div><div id="result"></div>
+<pre id="patron-desk-test-result">not run</pre>
+<script src="../../extension/version.js"></script>
+<script src="../../extension/selectors.js"></script>
+<script src="../../extension/settings.js"></script>
+<script src="../../extension/filler.js"></script>
+<script src="../../extension/overlay.js"></script>
+<script src="../../extension/scheduler.js"></script>
+<script src="../../extension/content.js"></script>
+<script src="../../extension/background.js"></script>
+<script src="../../extension/store.js"></script>
+<script src="../../extension/desk.js"></script>
+<script>
+  setTimeout(function () {
+    var D = window.PatronDesk || {};
+    var checks = [
+      { name: "no errors while loading", pass: window.__errors.length === 0, detail: window.__errors.join(" | ") },
+      { name: "selectors loaded", pass: !!D.PAGE },
+      { name: "settings loaded", pass: !!D.SETTINGS },
+      { name: "filler loaded", pass: typeof D.fill === "function" },
+      { name: "checklist loaded", pass: typeof D.showOverlay === "function" },
+      { name: "scheduler loaded", pass: typeof D.pressSchedule === "function" },
+      { name: "store loaded", pass: !!D.store },
+      { name: "page listener set", pass: typeof window.__listener === "function" }
+    ];
+    var failed = checks.filter(function (c) { return !c.pass; }).length;
+    document.getElementById("patron-desk-test-result").textContent =
+      JSON.stringify({ mode: "load", passed: checks.length - failed, failed: failed, checks: checks, report: [] });
+  }, 500);
+</script>
+</body>
+</html>

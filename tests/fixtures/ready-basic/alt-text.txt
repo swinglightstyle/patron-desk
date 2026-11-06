@@ -1,0 +1,4 @@
+Alt text for each card.
+
+01-first.png: A red square.
+02-second.png: A blue square.
